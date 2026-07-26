@@ -16,7 +16,6 @@ const int daylightOffsetSec = 0;
 const char* ntpServer = "pool.ntp.org";
 
 const int touchPin = 21;
-const unsigned long debounceMs = 250;
 
 #define DHTPIN 27
 #define DHTTYPE DHT22
@@ -63,7 +62,6 @@ uint16_t COL_PET_SWEAT;
 
 String lastTimeStr = "";
 int lastTouchRead = LOW;
-unsigned long lastToggleAt = 0;
 
 enum Screen { SCR_CLOCK = 0, SCR_DHT = 1, SCR_NEPSE = 2, SCR_PET = 3, SCR_GAME = 4, SCR_COUNT = 5 };
 Screen currentScreen = SCR_CLOCK;
@@ -713,27 +711,27 @@ void switchScreen(Screen next) {
   }
 }
 
+const unsigned long debounceMs = 250;
+unsigned long lastToggleAt = 0;
+
 void loop() {
   int reading = digitalRead(touchPin);
   unsigned long now = millis();
 
   if (reading == HIGH && lastTouchRead == LOW && (now - lastToggleAt) > debounceMs) {
     lastToggleAt = now;
-    switchScreen((Screen)((currentScreen + 1) % SCR_COUNT));
+    switchScreen(currentScreen == SCR_CLOCK ? SCR_DHT : SCR_CLOCK);
   }
   lastTouchRead = reading;
 
   unsigned long elapsed = now - screenStartAt;
   if (elapsed >= screenDurations[currentScreen]) {
-    switchScreen((Screen)((currentScreen + 1) % SCR_COUNT));
+    switchScreen(currentScreen == SCR_CLOCK ? SCR_DHT : SCR_CLOCK);
   }
 
   switch (currentScreen) {
     case SCR_CLOCK: updateClock(); break;
     case SCR_DHT: updateDhtScreen(); break;
-    case SCR_NEPSE: updateNepseScreen(); break;
-    case SCR_PET: updatePetScreen(); break;
-    case SCR_GAME: updateGameScreen(); break;
     default: break;
   }
 
