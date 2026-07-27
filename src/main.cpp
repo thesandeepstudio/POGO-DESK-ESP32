@@ -44,6 +44,21 @@ int nepseHistCount = 0;
 
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite clockSprite = TFT_eSprite(&tft);
+TFT_eSprite ldrSprite = TFT_eSprite(&tft);
+
+const int ldrPin = 34;
+const int LDR_W = 100;
+const int LDR_H = 22;
+float ldrSmoothed = -1;
+int lastLdrDisplayed = -9999;
+unsigned long lastLdrUpdateAt = 0;
+const unsigned long ldrUpdateIntervalMs = 400;
+
+const int DARK_ROOM_THRESHOLD = 15;
+bool darkThemeActive = false;
+unsigned long lastThemeCheckAt = 0;
+const unsigned long themeCheckIntervalMs = 5000;
+
 TFT_eSprite nepseSprite = TFT_eSprite(&tft);
 TFT_eSprite petSprite = TFT_eSprite(&tft);
 TFT_eSprite gameSprite = TFT_eSprite(&tft);
@@ -191,6 +206,8 @@ void drawClockFrame() {
   tft.fillScreen(COL_BG);
   drawFrame();
   lastTimeStr = "";  // force immediate redraw
+  lastLdrDisplayed = -9999;
+  lastLdrUpdateAt = 0;
 }
 
 void drawDhtScreen() {
@@ -198,6 +215,8 @@ void drawDhtScreen() {
   drawFrame();
   lastDhtStr = "";      // force immediate redraw
   lastDhtReadAt = 0;    // force immediate read
+  lastLdrDisplayed = -9999;
+  lastLdrUpdateAt = 0;
 }
 
 void drawNepseScreen() {
@@ -656,13 +675,70 @@ void updateGameScreen() {
   gameSprite.pushSprite(tft.width() / 2 - GAME_W / 2, tft.height() / 2 - GAME_H / 2);
 }
 
-void setup() {
-  Serial.begin(115200);
+void updateLdrLabel() {
+  unsigned long now = millis();
+  if (now - lastLdrUpdateAt < ldrUpdateIntervalMs && lastLdrUpdateAt != 0) return;
+  lastLdrUpdateAt = now;
 
+  int raw = analogRead(ldrPin);
+  if (ldrSmoothed < 0) ldrSmoothed = raw;
+  ldrSmoothed += (raw - ldrSmoothed) * 0.15f;
+  int display = (int)ldrSmoothed;
+
+  if (display == lastLdrDisplayed) return;
+  lastLdrDisplayed = display;
+
+  char buf[16];
+  snprintf(buf, sizeof(buf), "LDR %d", display);
+
+  ldrSprite.fillSprite(COL_BG);
+  ldrSprite.setTextFont(2);
+  ldrSprite.setTextColor(COL_ACCENT, COL_BG);
+  ldrSprite.drawString(buf, LDR_W / 2, LDR_H / 2);
+  ldrSprite.pushSprite(tft.width() / 2 - LDR_W / 2, 14);
+}
+
+void applyLightTheme() {
   COL_BG = TFT_WHITE;
   COL_TEXT = TFT_BLACK;
   COL_ACCENT = tft.color565(70, 70, 70);
   COL_DIM = tft.color565(210, 210, 210);
+}
+
+void applyDarkTheme() {
+  COL_BG = tft.color565(15, 15, 18);
+  COL_TEXT = tft.color565(235, 235, 230);
+  COL_ACCENT = tft.color565(160, 160, 165);
+  COL_DIM = tft.color565(55, 55, 60);
+}
+
+void updateTheme() {
+  unsigned long now = millis();
+  if (now - lastThemeCheckAt < themeCheckIntervalMs && lastThemeCheckAt != 0) return;
+  lastThemeCheckAt = now;
+
+  bool wantDark = ldrSmoothed >= 0 && ldrSmoothed < DARK_ROOM_THRESHOLD;
+
+  if (wantDark == darkThemeActive) return;
+  darkThemeActive = wantDark;
+
+  if (darkThemeActive) {
+    applyDarkTheme();
+  } else {
+    applyLightTheme();
+  }
+
+  if (currentScreen == SCR_CLOCK) {
+    drawClockFrame();
+  } else if (currentScreen == SCR_DHT) {
+    drawDhtScreen();
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  applyLightTheme();
   COL_GOOD = tft.color565(30, 140, 60);
   COL_BAD = tft.color565(190, 40, 40);
   COL_PET_BODY = tft.color565(255, 196, 140);
@@ -673,6 +749,7 @@ void setup() {
 
   pinMode(touchPin, INPUT_PULLDOWN);
   dht.begin();
+  analogSetPinAttenuation(ldrPin, ADC_0db);
 
   tft.init();
   tft.setRotation(1);
@@ -683,6 +760,10 @@ void setup() {
   clockSprite.setColorDepth(16);
   clockSprite.createSprite(SPRITE_W, SPRITE_H);
   clockSprite.setTextDatum(MC_DATUM);
+
+  ldrSprite.setColorDepth(16);
+  ldrSprite.createSprite(LDR_W, LDR_H);
+  ldrSprite.setTextDatum(MC_DATUM);
 
   nepseSprite.setColorDepth(16);
   nepseSprite.createSprite(NEPSE_W, NEPSE_H);
@@ -734,6 +815,8 @@ void loop() {
     case SCR_DHT: updateDhtScreen(); break;
     default: break;
   }
+  updateLdrLabel();
+  updateTheme();
 
   delay(50);
 }
