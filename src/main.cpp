@@ -173,6 +173,7 @@ const MochiGif* pickByMood(uint8_t mood) {
 }
 
 int sAnimIndex = 0;
+bool sWasSleepZone = false;
 
 // Sequential loop through every animation of the given mood.
 const MochiGif* nextSequential(uint8_t mood) {
@@ -212,10 +213,17 @@ void playGif(const MochiGif* g) {
   tft.fillScreen(TFT_BLACK);
 }
 
-bool isNight() {
+bool isSleepZone() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo, 0)) return false;
-  return (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6);
+  return (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 7);
+}
+
+const MochiGif* findByName(const char* name) {
+  for (int i = 0; i < kGifCount; i++) {
+    if (strcmp(kGifs[i].name, name) == 0) return &kGifs[i];
+  }
+  return nullptr;
 }
 
 // --- Touch handling ---
@@ -303,13 +311,21 @@ void loop() {
     sPlayReaction = false;
     g = nextSequential(MOOD_REACTION);
   } else {
-    // Full rotation through every animation, mood-shaped by context:
-    // night = only sleepy faces, day = loop through all the rest.
-    if (isNight()) {
+    // Sleep zone (22:00–7:00): yawn to fall asleep, then only sleepy faces.
+    // Day: yawn to wake up, then full rotation through all animations.
+    bool sleepZone = isSleepZone();
+    if (sleepZone && !sWasSleepZone) {
+      g = findByName("yawn");
+      if (!g) g = nextSequential(MOOD_SLEEPY);
+    } else if (!sleepZone && sWasSleepZone) {
+      g = findByName("yawn");
+      if (!g) g = nextSequentialAll();
+    } else if (sleepZone) {
       g = nextSequential(MOOD_SLEEPY);
     } else {
       g = nextSequentialAll();
     }
+    sWasSleepZone = sleepZone;
   }
 
   if (!g) g = nextSequential(MOOD_DEFAULT);
