@@ -51,9 +51,10 @@ CORE = {"happy", "smile", "wink", "love", "surprised", "scared",
 
 # Explicit manual overrides (task board).
 # force Always include these (e.g. user favourites).
-FORCE_INCLUDE = {"giggle", "encouragement", "furious"}
+FORCE_INCLUDE = {"giggle", "encouragement", "furious",
+                 "playful", "sushi", "tough"}
 # force Always drop these.
-FORCE_EXCLUDE = {"glowing", "growing", "hello"}
+FORCE_EXCLUDE = {"glowing", "growing", "hello", "menacing"}
 
 
 def chunk_bytes(data: bytes, width: int = 24) -> str:
