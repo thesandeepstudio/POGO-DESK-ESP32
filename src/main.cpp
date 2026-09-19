@@ -6,6 +6,7 @@
 #include <time.h>
 #include <TFT_eSPI.h>
 #include <DHT.h>
+#include <Preferences.h>
 #include "BenzinBoldClock.h"
 #include "BenzinBoldSmall.h"
 
@@ -107,10 +108,29 @@ const int PET_H = 190;
 const int PET_ORIGIN_X = (PET_W - PET_GRID * PET_SCALE) / 2;
 const int PET_ORIGIN_Y = 12;
 
-enum PetExpr { PET_HAPPY, PET_HOT, PET_COLD, PET_HUMID, PET_SLEEPY, PET_EXPR_NONE };
+enum PetExpr { PET_HAPPY, PET_HOT, PET_COLD, PET_HUMID, PET_SLEEPY, PET_SAD, PET_EXPR_NONE };
 PetExpr lastDrawnPetExpr = PET_EXPR_NONE;
 unsigned long lastPetCheckAt = 0;
 const unsigned long petCheckIntervalMs = 2000;
+
+// Happiness — persistent stat (ESP32 NVS). Decays over time, boosted by petting.
+const char* HAPPY_NS = "mochi";
+const float HAPPY_START = 60.0f;
+const float HAPPY_MAX = 100.0f;
+const float HAPPY_MIN = 0.0f;
+const float HAPPY_DECAY_PER_SEC = 0.06f;        // ~1 pt / 17s — tune to taste
+const float HAPPY_TAP_BOOST = 6.0f;
+const float HAPPY_LONGPRESS_BOOST = 15.0f;
+bool happyLoaded = false;
+float happy = HAPPY_START;
+unsigned long lastHappyTickAt = 0;
+const unsigned long happyTickMs = 5000;
+
+// Petting feedback
+enum PetReaction { PET_REACT_NONE, PET_REACT_TAP, PET_REACT_HEART };
+PetReaction activeReaction = PET_REACT_NONE;
+unsigned long reactionUntilMs = 0;
+const unsigned long reactionShowMs = 1500;
 
 // Dino runner (idle/decorative, auto-plays, no input)
 const int GAME_W = 220;
@@ -424,16 +444,61 @@ void updateNepseScreen() {
   nepseSprite.pushSprite(tft.width() / 2 - NEPSE_W / 2, tft.height() / 2 - NEPSE_H / 2);
 }
 
+void loadHappiness() {
+  Preferences prefs;
+  prefs.begin(HAPPY_NS, true);
+  float saved = prefs.getFloat("happy", HAPPY_START);
+  unsigned long savedAt = prefs.getULong("at", 0);
+  prefs.end();
+
+  // Decay while powered off: compute loss from elapsed real time.
+  struct tm timeinfo;
+  if (savedAt > 0 && getLocalTime(&timeinfo, 10)) {
+    time_t now = time(nullptr);
+    unsigned long elapsed = (unsigned long)now > savedAt ? (unsigned long)now - savedAt : 0;
+    saved -= elapsed * HAPPY_DECAY_PER_SEC;
+    if (saved < HAPPY_MIN) saved = HAPPY_MIN;
+  }
+  happy = saved;
+  happyLoaded = true;
+}
+
+void saveHappiness() {
+  Preferences prefs;
+  prefs.begin(HAPPY_NS, false);
+  prefs.putFloat("happy", happy);
+  prefs.putULong("at", (unsigned long)time(nullptr));
+  prefs.end();
+}
+
+void addHappiness(float amount) {
+  happy += amount;
+  if (happy > HAPPY_MAX) happy = HAPPY_MAX;
+  if (happy < HAPPY_MIN) happy = HAPPY_MIN;
+  saveHappiness();
+}
+
+void tickHappiness() {
+  unsigned long now = millis();
+  if (now - lastHappyTickAt < happyTickMs && lastHappyTickAt != 0) return;
+  lastHappyTickAt = now;
+  if (happy <= HAPPY_MIN) return;
+  happy -= HAPPY_DECAY_PER_SEC * (happyTickMs / 1000.0f);
+  if (happy < HAPPY_MIN) happy = HAPPY_MIN;
+}
+
 PetExpr determinePetExpression() {
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 10) && (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6)) {
     return PET_SLEEPY;
   }
+  if (activeReaction != PET_REACT_NONE) return PET_HAPPY;
   if (!isnan(lastKnownTemp)) {
     if (lastKnownTemp > 30.0f) return PET_HOT;
     if (lastKnownTemp < 15.0f) return PET_COLD;
   }
   if (!isnan(lastKnownHum) && lastKnownHum > 80.0f) return PET_HUMID;
+  if (happy < 25.0f) return PET_SAD;
   return PET_HAPPY;
 }
 
@@ -524,11 +589,37 @@ void drawPetMouth(const int offsets[][2], int count, int anchorX, int anchorY, u
   }
 }
 
+void drawPetHeartEyes() {
+  int eyeXs[2] = {9, 17};
+  for (int e = 0; e < 2; e++) {
+    int ex = eyeXs[e];
+    petPixel(ex - 1, 12, COL_TEXT);
+    petPixel(ex + 1, 12, COL_TEXT);
+    petPixel(ex, 13, COL_TEXT);
+    petPixel(ex - 2, 13, COL_TEXT);
+    petPixel(ex + 2, 13, COL_TEXT);
+    petPixel(ex - 1, 14, COL_TEXT);
+    petPixel(ex + 1, 14, COL_TEXT);
+    petPixel(ex - 2, 14, COL_TEXT);
+    petPixel(ex + 2, 14, COL_TEXT);
+    petPixel(ex, 15, COL_TEXT);
+  }
+}
+
 void renderPetSprite(PetExpr expr) {
   petSprite.fillSprite(COL_BG);
   drawPetBody();
 
   const int mouthX = 13, mouthY = 19;
+
+  if (expr == PET_HAPPY && activeReaction == PET_REACT_HEART) {
+    drawPetHeartEyes();
+    int smile[][2] = {{-3, 0}, {-2, 1}, {-1, 2}, {0, 2}, {1, 2}, {2, 1}, {3, 0}};
+    drawPetMouth(smile, 7, mouthX, mouthY, COL_TEXT);
+    petPixel(5, 16, COL_PET_BLUSH);
+    petPixel(21, 16, COL_PET_BLUSH);
+    return;
+  }
 
   switch (expr) {
     case PET_HAPPY: {
@@ -561,6 +652,15 @@ void renderPetSprite(PetExpr expr) {
       drawPetMouth(flat, 5, mouthX, mouthY, COL_TEXT);
       break;
     }
+    case PET_SAD: {
+      drawPetEyesDroopy(11);
+      int frown[][2] = {{-2, 3}, {-1, 2}, {0, 2}, {1, 2}, {2, 3}};
+      drawPetMouth(frown, 5, mouthX, mouthY, COL_TEXT);
+      petPixel(7, 16, COL_PET_SWEAT);
+      petPixel(7, 17, COL_PET_SWEAT);
+      petPixel(6, 18, COL_PET_SWEAT);
+      break;
+    }
     case PET_SLEEPY:
     default: {
       drawPetEyesClosed(12);
@@ -587,6 +687,11 @@ void updatePetScreen() {
   unsigned long now = millis();
   if (now - lastPetCheckAt < petCheckIntervalMs && lastPetCheckAt != 0) return;
   lastPetCheckAt = now;
+
+  if (activeReaction != PET_REACT_NONE && now >= reactionUntilMs) {
+    activeReaction = PET_REACT_NONE;
+    lastDrawnPetExpr = PET_EXPR_NONE;
+  }
 
   PetExpr expr = determinePetExpression();
   if (expr == lastDrawnPetExpr) return;
@@ -759,6 +864,8 @@ void setup() {
   connectWiFi();
   syncTime();
 
+  loadHappiness();
+
   clockSprite.setColorDepth(16);
   clockSprite.createSprite(SPRITE_W, SPRITE_H);
   clockSprite.setTextDatum(MC_DATUM);
@@ -795,17 +902,58 @@ void switchScreen(Screen next) {
 }
 
 const unsigned long debounceMs = 250;
-unsigned long lastToggleAt = 0;
+const unsigned long longPressMs = 700;
+unsigned long pressStartAt = 0;
+bool longPressFired = false;
+
+void handlePetReaction(bool isLongPress) {
+  if (isLongPress) {
+    addHappiness(HAPPY_LONGPRESS_BOOST);
+    activeReaction = PET_REACT_HEART;
+  } else {
+    addHappiness(HAPPY_TAP_BOOST);
+    activeReaction = PET_REACT_TAP;
+  }
+  reactionUntilMs = millis() + reactionShowMs;
+  lastDrawnPetExpr = PET_EXPR_NONE;
+  lastPetCheckAt = 0;
+}
+
+void handleTouch(int reading, unsigned long now) {
+  bool wasPressed = lastTouchRead == HIGH;
+  bool isPressed = reading == HIGH;
+  lastTouchRead = reading;
+
+  if (isPressed && !wasPressed) {
+    pressStartAt = now;
+    longPressFired = false;
+    return;
+  }
+
+  if (isPressed && !longPressFired && (now - pressStartAt) >= longPressMs) {
+    longPressFired = true;
+    if (currentScreen == SCR_PET) {
+      handlePetReaction(true);
+    } else {
+      switchScreen(SCR_PET);
+    }
+    return;
+  }
+
+  if (!isPressed && wasPressed && !longPressFired && (now - pressStartAt) >= debounceMs) {
+    if (currentScreen == SCR_PET) {
+      handlePetReaction(false);
+    } else {
+      switchScreen(currentScreen == SCR_CLOCK ? SCR_DHT : SCR_CLOCK);
+    }
+  }
+}
 
 void loop() {
-  int reading = digitalRead(touchPin);
   unsigned long now = millis();
 
-  if (reading == HIGH && lastTouchRead == LOW && (now - lastToggleAt) > debounceMs) {
-    lastToggleAt = now;
-    switchScreen(currentScreen == SCR_CLOCK ? SCR_DHT : SCR_CLOCK);
-  }
-  lastTouchRead = reading;
+  int reading = digitalRead(touchPin);
+  handleTouch(reading, now);
 
   unsigned long elapsed = now - screenStartAt;
   if (elapsed >= screenDurations[currentScreen]) {
@@ -815,10 +963,14 @@ void loop() {
   switch (currentScreen) {
     case SCR_CLOCK: updateClock(); break;
     case SCR_DHT: updateDhtScreen(); break;
+    case SCR_NEPSE: updateNepseScreen(); break;
+    case SCR_PET: updatePetScreen(); break;
+    case SCR_GAME: updateGameScreen(); break;
     default: break;
   }
   updateLdrLabel();
   updateTheme();
+  tickHappiness();
 
   delay(50);
 }
