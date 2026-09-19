@@ -1,25 +1,31 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <time.h>
 #include <TFT_eSPI.h>
+#include <AnimatedGIF.h>
 #include <Preferences.h>
 
+#include "animations.h"
+
+// --- Board ---
 const int touchPin = 21;
 
+// --- Network (for the sleepy zone clock only) ---
+const char* ssid = "jasodevi_2";
+const char* password = "CLEB4F06F6";
+const long gmtOffsetSec = 5 * 3600 + 45 * 60;
+const int daylightOffsetSec = 0;
+const char* ntpServer = "pool.ntp.org";
+
+// --- Display ---
 TFT_eSPI tft = TFT_eSPI();
-TFT_eSprite petSprite = TFT_eSprite(&tft);
+AnimatedGIF gif;
 
-uint16_t COL_BG = TFT_BLACK;
-uint16_t COL_FACE = TFT_WHITE;
-uint16_t COL_EYE = TFT_BLACK;
-uint16_t COL_FRAME = tft.color565(40, 40, 45);
-uint16_t COL_ACCENT = tft.color565(160, 160, 165);
+// GIF centered on screen (computed per animation, used by GIFDraw)
+int gGifX = 0;
+int gGifY = 0;
 
-// Bug eyes (sprite pixels, sprite = PET_W x PET_H)
-const int PET_W = 200;
-const int PET_H = 190;
-
-const float EYE_L_X = 78.0f, EYE_R_X = 122.0f, EYE_Y = 95.0f, EYE_RX = 20.0f, EYE_RY_MAX = 26.0f;
-
-// Happiness — persistent stat (ESP32 NVS).
+// --- Happiness — persistent stat (ESP32 NVS) ---
 const char* HAPPY_NS = "mochi";
 const float HAPPY_START = 60.0f;
 const float HAPPY_MAX = 100.0f;
@@ -31,62 +37,9 @@ float happy = HAPPY_START;
 unsigned long lastHappyTickAt = 0;
 const unsigned long happyTickMs = 5000;
 
-// Petting reaction — widen eyes for a moment (still eyes-only)
-unsigned long widenUntilMs = 0;
-const unsigned long widenShowMs = 400;
-
-// Blink state machine
-enum BlinkStage { BLINK_OPEN, BLINK_CLOSING, BLINK_CLOSED, BLINK_OPENING };
-BlinkStage blinkStage = BLINK_OPEN;
-unsigned long blinkStartAt = 0;
-unsigned long openHoldMs = 2500;
-const unsigned long CLOSE_MS = 110;
-const unsigned long CLOSED_MS = 90;
-const unsigned long OPEN_MS = 150;
-
-float smoothstep(float t) {
-  if (t < 0) t = 0;
-  if (t > 1) t = 1;
-  return t * t * (3.0f - 2.0f * t);
-}
-
-float blinkScale() {
-  unsigned long now = millis();
-  switch (blinkStage) {
-    case BLINK_OPEN:
-      if (now - blinkStartAt >= openHoldMs) {
-        blinkStage = BLINK_CLOSING;
-        blinkStartAt = now;
-      }
-      return 1.0f;
-    case BLINK_CLOSING: {
-      float t = (float)(now - blinkStartAt) / CLOSE_MS;
-      if (t >= 1) {
-        t = 1;
-        blinkStage = BLINK_CLOSED;
-        blinkStartAt = now;
-      }
-      return 1.0f - smoothstep(t);
-    }
-    case BLINK_CLOSED:
-      if (now - blinkStartAt >= CLOSED_MS) {
-        blinkStage = BLINK_OPENING;
-        blinkStartAt = now;
-      }
-      return 0.0f;
-    case BLINK_OPENING: {
-      float t = (float)(now - blinkStartAt) / OPEN_MS;
-      if (t >= 1) {
-        t = 1;
-        blinkStage = BLINK_OPEN;
-        blinkStartAt = now;
-        openHoldMs = 2000 + random(1500);
-      }
-      return smoothstep(t);
-    }
-  }
-  return 1.0f;
-}
+// --- Petting reactions (flags consumed after the current GIF finishes) ---
+bool sPlayReaction = false;
+bool sPlayLove = false;
 
 void loadHappiness() {
   Preferences prefs;
@@ -118,49 +71,137 @@ void tickHappiness() {
   if (happy < HAPPY_MIN) happy = HAPPY_MIN;
 }
 
-void drawEye(float cx, float ry) {
-  if (ry <= 0.8f) return;  // fully closed — eye disappears (liquidy blink to nothing)
+// --- GIF draw callback (line-based, palette -> RGB565 into TFT, centered) ---
 
-  float rx = EYE_RX * (1.0f + (1.0f - ry / EYE_RY_MAX) * 0.06f);  // slight squash-&-stretch
+#define BUFFER_SIZE 256
+uint16_t usTemp[BUFFER_SIZE];
 
-  // White eyeball
-  petSprite.fillEllipse(cx, EYE_Y, rx, ry, COL_FACE);
+void GIFDraw(GIFDRAW* pDraw) {
+  uint8_t* s;
+  uint16_t* d;
+  int x, y, iWidth, iCount;
 
-  // Black pupil, squashes with the lid
-  float pupilR = rx * 0.52f;
-  float pupilH = ry * 0.85f;
-  petSprite.fillEllipse(cx, EYE_Y + 2, pupilR, pupilH, COL_EYE);
+  iWidth = pDraw->iWidth;
+  if (pDraw->iX > tft.width()) return;
+  if (iWidth + pDraw->iX > tft.width()) iWidth = tft.width() - pDraw->iX;
+  uint16_t* usPalette = pDraw->pPalette;
 
-  // White highlight (shifts up as lid closes → liquidy feel)
-  float hiY = EYE_Y - ry * 0.35f;
-  petSprite.fillCircle(cx - rx * 0.28f, hiY, rx * 0.22f, COL_FACE);
-  petSprite.fillCircle(cx + rx * 0.3f, hiY + ry * 0.25f, rx * 0.10f, COL_FACE);
-}
+  x = pDraw->iX + gGifX;
+  y = pDraw->iY + pDraw->y + gGifY;
+  if (y >= tft.height() || x >= tft.width() || iWidth < 1) return;
 
-void renderPet() {
-  unsigned long now = millis();
+  s = pDraw->pPixels;
+  if (pDraw->ucDisposalMethod == 2) {
+    for (int i = 0; i < iWidth; i++) {
+      if (s[i] == pDraw->ucTransparent) s[i] = pDraw->ucBackground;
+    }
+    pDraw->ucHasTransparency = 0;
+  }
 
-  float scale = blinkScale();
-  bool widening = now < widenUntilMs;
-  float ry = EYE_RY_MAX * scale * (widening ? 1.15f : 1.0f);
-
-  petSprite.fillSprite(COL_BG);
-
-  drawEye(EYE_L_X, ry);
-  drawEye(EYE_R_X, ry);
-
-  petSprite.pushSprite(tft.width() / 2 - PET_W / 2, tft.height() / 2 - PET_H / 2);
-}
-
-void handlePetReaction(bool isLongPress) {
-  widenUntilMs = millis() + widenShowMs;
-  if (isLongPress) {
-    addHappiness(HAPPY_LONGPRESS_BOOST);
-    widenUntilMs = millis() + 800;
+  if (pDraw->ucHasTransparency) {
+    uint8_t* pEnd;
+    uint8_t c, ucTransparent = pDraw->ucTransparent;
+    pEnd = s + iWidth;
+    x = 0;
+    iCount = 0;
+    while (x < iWidth) {
+      c = ucTransparent - 1;
+      d = &usTemp[0];
+      while (c != ucTransparent && s < pEnd && iCount < BUFFER_SIZE) {
+        c = *s++;
+        if (c == ucTransparent) {
+          s--;
+        } else {
+          *d++ = usPalette[c];
+          iCount++;
+        }
+      }
+      if (iCount) {
+        tft.setAddrWindow(pDraw->iX + gGifX + x, y, iCount, 1);
+        tft.pushPixels(usTemp, iCount);
+        x += iCount;
+        iCount = 0;
+      }
+      c = ucTransparent;
+      while (c == ucTransparent && s < pEnd) {
+        c = *s++;
+        if (c == ucTransparent) x++;
+        else s--;
+      }
+    }
   } else {
-    addHappiness(HAPPY_TAP_BOOST);
+    s = pDraw->pPixels;
+    if (iWidth <= BUFFER_SIZE) {
+      for (iCount = 0; iCount < iWidth; iCount++) usTemp[iCount] = usPalette[*s++];
+      tft.setAddrWindow(pDraw->iX + gGifX, y, iWidth, 1);
+      tft.pushPixels(usTemp, iWidth);
+    } else {
+      iCount = 0;
+      for (int i = 0; i < BUFFER_SIZE; i++) usTemp[i] = usPalette[*s++];
+      tft.setAddrWindow(pDraw->iX + gGifX, y, BUFFER_SIZE, 1);
+      tft.pushPixels(usTemp, BUFFER_SIZE);
+      iCount = BUFFER_SIZE;
+      while (iCount < iWidth) {
+        int n = iWidth - iCount;
+        if (n > BUFFER_SIZE) n = BUFFER_SIZE;
+        for (int i = 0; i < n; i++) usTemp[i] = usPalette[*s++];
+        tft.pushPixels(usTemp, n);
+        iCount += n;
+      }
+    }
   }
 }
+
+// --- Animation selection ---
+
+void handleTouch(int reading, unsigned long now);
+void tickHappiness();
+
+const MochiGif* pickByMood(uint8_t mood) {
+  int n = 0;
+  for (int i = 0; i < kGifCount; i++) if (kGifs[i].mood == mood) n++;
+  if (n == 0) return nullptr;
+  int idx = random(n);
+  int seen = 0;
+  for (int i = 0; i < kGifCount; i++) {
+    if (kGifs[i].mood == mood) {
+      if (seen == idx) return &kGifs[i];
+      seen++;
+    }
+  }
+  return nullptr;
+}
+
+void playGif(const MochiGif* g) {
+  if (!g) return;
+  if (!gif.open((uint8_t*)g->data, g->size, GIFDraw)) return;
+
+  gGifX = (tft.width() - gif.getCanvasWidth()) / 2;
+  gGifY = (tft.height() - gif.getCanvasHeight()) / 2;
+  if (gGifX < 0) gGifX = 0;
+  if (gGifY < 0) gGifY = 0;
+
+  Serial.printf("Playing %s (%dx%d)\n", g->name, gif.getCanvasWidth(), gif.getCanvasHeight());
+
+  tft.fillScreen(TFT_BLACK);
+  tft.startWrite();
+  while (gif.playFrame(true, NULL)) {
+    handleTouch(digitalRead(touchPin), millis());
+    tickHappiness();
+    yield();
+  }
+  gif.close();
+  tft.endWrite();
+  tft.fillScreen(TFT_BLACK);
+}
+
+bool isNight() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 0)) return false;
+  return (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6);
+}
+
+// --- Touch handling ---
 
 const unsigned long debounceMs = 250;
 const unsigned long longPressMs = 700;
@@ -181,13 +222,36 @@ void handleTouch(int reading, unsigned long now) {
 
   if (isPressed && !longPressFired && (now - pressStartAt) >= longPressMs) {
     longPressFired = true;
-    handlePetReaction(true);
+    addHappiness(HAPPY_LONGPRESS_BOOST);
+    sPlayLove = true;
     return;
   }
 
   if (!isPressed && wasPressed && !longPressFired && (now - pressStartAt) >= debounceMs) {
-    handlePetReaction(false);
+    addHappiness(HAPPY_TAP_BOOST);
+    sPlayReaction = true;
   }
+}
+
+// --- Boot: get the clock so sleepy zones work (bounded, never fatal) ---
+
+void syncClock() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 6000) delay(50);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    configTime(gmtOffsetSec, daylightOffsetSec, ntpServer);
+    struct tm timeinfo;
+    t0 = millis();
+    while (!getLocalTime(&timeinfo, 0) && millis() - t0 < 2500) delay(100);
+    if (getLocalTime(&timeinfo, 0)) {
+      Serial.printf("Clock synced (hour %d)\n", timeinfo.tm_hour);
+    }
+  }
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
 }
 
 void setup() {
@@ -197,26 +261,38 @@ void setup() {
 
   tft.init();
   tft.setRotation(1);
-
-  petSprite.setColorDepth(16);
-  petSprite.createSprite(PET_W, PET_H);
+  tft.fillScreen(TFT_BLACK);
   randomSeed(ESP.getEfuseMac());
+  gif.begin(BIG_ENDIAN_PIXELS);
 
   loadHappiness();
-  blinkStartAt = millis();
+  syncClock();
 
-  tft.fillScreen(COL_BG);
-  tft.drawRoundRect(4, 4, tft.width() - 8, tft.height() - 8, 14, COL_FRAME);
+  Serial.printf("Happiness: %.1f\n", happy);
 }
 
 void loop() {
   unsigned long now = millis();
-
   int reading = digitalRead(touchPin);
   handleTouch(reading, now);
-
-  renderPet();
   tickHappiness();
 
-  delay(16);  // ~60fps — smooth liquidy animation
+  const MochiGif* g = nullptr;
+
+  if (sPlayLove) {
+    sPlayLove = false;
+    g = pickByMood(MOOD_LOVE);
+  } else if (sPlayReaction) {
+    sPlayReaction = false;
+    g = pickByMood(MOOD_REACTION);
+  } else {
+    g = pickByMood(isNight() ? MOOD_SLEEPY : MOOD_DEFAULT);
+  }
+
+  static const MochiGif* lastPlayed = nullptr;
+  while (g && g == lastPlayed) g = pickByMood(g->mood);
+  lastPlayed = g;
+
+  playGif(g);
+  delay(20);
 }
