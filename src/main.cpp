@@ -189,10 +189,14 @@ const MochiGif* nextSequential(uint8_t mood) {
   return nullptr;
 }
 
-// Sequential full rotation through ALL animations (all moods).
+// Sequential full rotation through ALL animations except sleep zone ones
+// (sleepy, drowsy, yawn play only during 22:00–7:00).
 const MochiGif* nextSequentialAll() {
-  sAnimIndex = (sAnimIndex + 1) % kGifCount;
-  return &kGifs[sAnimIndex];
+  for (int i = 0; i < kGifCount; i++) {
+    sAnimIndex = (sAnimIndex + 1) % kGifCount;
+    if (kGifs[sAnimIndex].mood != MOOD_SLEEPY) return &kGifs[sAnimIndex];
+  }
+  return nullptr;
 }
 
 void playGif(const MochiGif* g) {
