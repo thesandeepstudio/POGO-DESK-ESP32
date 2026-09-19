@@ -49,6 +49,12 @@ MOODS = {
 CORE = {"happy", "smile", "wink", "love", "surprised", "scared",
         "sleepy", "drowsy", "yawn"}
 
+# Explicit manual overrides (task board).
+# force Always include these (e.g. user favourites).
+FORCE_INCLUDE = {"giggle", "encouragement", "furious"}
+# force Always drop these.
+FORCE_EXCLUDE = {"glowing", "growing", "hello"}
+
 
 def chunk_bytes(data: bytes, width: int = 24) -> str:
     lines = []
@@ -85,13 +91,17 @@ def main() -> None:
 
     # Core GIFs always included first.
     chosen = {f: s for f, s in sizes.items()
-              if s[0] in CORE}
+              if s[0] in CORE or s[0] in FORCE_INCLUDE}
+    for f in FORCE_EXCLUDE:
+        chosen.pop("%s.gif" % f, None)
     used = sum(s[2] for s in chosen.values())
 
     # Greedily add the rest, smallest first, until the budget is used up.
     for fname, (base, mood, size) in sorted(sizes.items(),
                                             key=lambda kv: kv[1][2]):
         if fname in chosen:
+            continue
+        if base in FORCE_EXCLUDE:
             continue
         if used + size > max_gif_bytes:
             continue
