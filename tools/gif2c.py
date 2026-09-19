@@ -4,11 +4,50 @@
 Embeds raw GIF bytes as const arrays so AnimatedGIF can play them
 straight from flash (no SD card needed).
 
+Fits as many GIFs as will fit in the flash budget (greedy by size),
+each tagged with a mood, then emits kGifs[] in a fixed order so the
+firmware can loop through them sequentially.
+
 Usage:
-    python tools/gif2c.py <input_dir> <output_header>
+    python tools/gif2c.py <input_dir> <output_header> [max_gif_bytes]
 """
 import os
 import sys
+
+# GIF -> mood mapping (blank.gif excluded: it's the Watcher's blank screen,
+# which our firmware already does by filling the display black).
+MOOD_DEFAULT = "DEFAULT"
+MOOD_LOVE = "LOVE"
+MOOD_REACTION = "REACTION"
+MOOD_SLEEPY = "SLEEPY"
+
+MOODS = {
+    "happy": MOOD_DEFAULT, "smile": MOOD_DEFAULT, "wink": MOOD_DEFAULT,
+    "giggle": MOOD_DEFAULT, "laughing": MOOD_DEFAULT, "relaxed": MOOD_DEFAULT,
+    "serene": MOOD_DEFAULT, "hello": MOOD_DEFAULT, "glowing": MOOD_DEFAULT,
+    "handsome": MOOD_DEFAULT, "swinging": MOOD_DEFAULT, "playful": MOOD_DEFAULT,
+    "dancing": MOOD_DEFAULT, "encouragement": MOOD_DEFAULT, "sparkle": MOOD_DEFAULT,
+    "sushi": MOOD_DEFAULT, "brave": MOOD_DEFAULT, "energetic": MOOD_DEFAULT,
+    "love": MOOD_LOVE, "adore": MOOD_LOVE, "shy": MOOD_LOVE,
+    "sleepy": MOOD_SLEEPY, "drowsy": MOOD_SLEEPY, "yawn": MOOD_SLEEPY,
+    "surprised": MOOD_REACTION, "scared": MOOD_REACTION, "sneeze": MOOD_REACTION,
+    "spraying": MOOD_REACTION, "right": MOOD_REACTION, "left": MOOD_REACTION,
+    "squint": MOOD_REACTION, "splash": MOOD_REACTION, "teasing": MOOD_REACTION,
+    "smoke": MOOD_REACTION, "rain": MOOD_REACTION, "growing": MOOD_REACTION,
+    "down": MOOD_REACTION, "shrink": MOOD_REACTION, "crying": MOOD_REACTION,
+    "contempt": MOOD_REACTION, "enraged": MOOD_REACTION, "angry": MOOD_REACTION,
+    "evil": MOOD_REACTION, "irritated": MOOD_REACTION, "sick": MOOD_REACTION,
+    "fierce": MOOD_REACTION, "sobbing": MOOD_REACTION, "devil": MOOD_REACTION,
+    "police": MOOD_REACTION, "menacing": MOOD_REACTION, "tough": MOOD_REACTION,
+    "smirk": MOOD_REACTION, "mistake": MOOD_REACTION, "distracted": MOOD_REACTION,
+    "buzzing": MOOD_REACTION, "furious": MOOD_REACTION, "weeping": MOOD_REACTION,
+    "dizzy": MOOD_REACTION, "fast": MOOD_REACTION, "rush": MOOD_REACTION,
+    "blinding": MOOD_REACTION, "speed": MOOD_REACTION,
+}
+
+# GIFs we always keep, regardless of size (core personality faces).
+CORE = {"happy", "smile", "wink", "love", "surprised", "scared",
+        "sleepy", "drowsy", "yawn"}
 
 
 def chunk_bytes(data: bytes, width: int = 24) -> str:
@@ -20,55 +59,64 @@ def chunk_bytes(data: bytes, width: int = 24) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         print(__doc__)
         sys.exit(1)
 
     src_dir, out_path = sys.argv[1], sys.argv[2]
+    max_gif_bytes = int(sys.argv[3]) if len(sys.argv) == 4 else 1_950_000
 
-    picks = {
-        "happy.gif": "default",
-        "smile.gif": "default",
-        "wink.gif": "default",
-        "love.gif": "love",
-        "surprised.gif": "reaction",
-        "scared.gif": "reaction",
-        "sleepy.gif": "sleepy",
-        "drowsy.gif": "sleepy",
-        "yawn.gif": "sleepy",
-    }
-
-    names = {}
-    blocks = []
-    total = 0
-
-    for fname, mood in picks.items():
+    sizes = {}
+    for base, mood in MOODS.items():
+        fname = "%s.gif" % base
         path = os.path.join(src_dir, fname)
         if not os.path.exists(path):
             sys.stderr.write("missing: %s\n" % path)
             continue
         with open(path, "rb") as f:
+            sizes[fname] = (base, mood, len(f.read()))
+        print("  %-14s %6d bytes  mood=%s%s" %
+              (fname, sizes[fname][2], mood,
+               "  [core]" if base in CORE else ""))
+
+    if not sizes:
+        sys.stderr.write("no GIFs found in %s\n" % src_dir)
+        sys.exit(1)
+
+    # Core GIFs always included first.
+    chosen = {f: s for f, s in sizes.items()
+              if s[0] in CORE}
+    used = sum(s[2] for s in chosen.values())
+
+    # Greedily add the rest, smallest first, until the budget is used up.
+    for fname, (base, mood, size) in sorted(sizes.items(),
+                                            key=lambda kv: kv[1][2]):
+        if fname in chosen:
+            continue
+        if used + size > max_gif_bytes:
+            continue
+        chosen[fname] = (base, mood, size)
+        used += size
+
+    # Fixed order: alphabetical by base name for a pleasant sequential loop.
+    ordered = sorted(chosen.values(), key=lambda s: s[0])
+
+    blocks = []
+    for base, mood, size in ordered:
+        with open(os.path.join(src_dir, "%s.gif" % base), "rb") as f:
             data = f.read()
-        ident = fname.split(".")[0]
-        names[fname] = (ident, mood)
+        ident = base.upper()
         blocks.append("const uint8_t GIF_%s[] PROGMEM = {\n%s\n};\n" %
-                      (ident.upper(), chunk_bytes(data)))
-        total += len(data)
-        print("  %-14s %6d bytes" % (fname, len(data)))
+                      (ident, chunk_bytes(data)))
 
     with open(out_path, "w") as f:
-        f.write("// Auto-generated by tools/gif2c.py — do not edit by hand.\n")
+        f.write("// Auto-generated by tools/gif2c.py - do not edit by hand.\n")
         f.write("// Dasai Mochi animations embedded in flash (no SD card).\n")
-        f.write("// GIFs (c) Dasai — personal use in this Mochi project only.\n\n")
+        f.write("// GIFs (c) Dasai - personal use in this Mochi project only.\n\n")
         f.write("#include <Arduino.h>\n\n")
         for block in blocks:
             f.write(block + "\n")
 
-        entries = []
-        for fname, (ident, mood) in names.items():
-            entries.append(
-                '  { GIF_%s, sizeof(GIF_%s), "%s", MOOD_%s }' %
-                (ident.upper(), ident.upper(), ident, mood.upper()))
         f.write("typedef struct {\n")
         f.write("  const uint8_t *data;\n")
         f.write("  uint32_t size;\n")
@@ -82,11 +130,16 @@ def main() -> None:
         f.write("  MOOD_SLEEPY,\n")
         f.write("};\n\n")
         f.write("const MochiGif kGifs[] = {\n")
+        entries = [
+            '  { GIF_%s, sizeof(GIF_%s), "%s", MOOD_%s }' %
+            (base.upper(), base.upper(), base, mood)
+            for base, mood, _ in ordered
+        ]
         f.write(",\n".join(entries))
         f.write("\n};\n\n")
-        f.write("const int kGifCount = %d;\n" % len(names))
+        f.write("const int kGifCount = %d;\n" % len(ordered))
 
-    print("Total: %d bytes -> %s" % (total, out_path))
+    print("Fitted %d GIFs, %d bytes total -> %s" % (len(ordered), used, out_path))
 
 
 if __name__ == "__main__":

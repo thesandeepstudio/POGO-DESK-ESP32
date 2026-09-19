@@ -172,6 +172,17 @@ const MochiGif* pickByMood(uint8_t mood) {
   return nullptr;
 }
 
+int sAnimIndex = 0;
+
+// Sequential loop through every animation of the given mood.
+const MochiGif* nextSequential(uint8_t mood) {
+  for (int i = 0; i < kGifCount; i++) {
+    sAnimIndex = (sAnimIndex + 1) % kGifCount;
+    if (kGifs[sAnimIndex].mood == mood) return &kGifs[sAnimIndex];
+  }
+  return nullptr;
+}
+
 void playGif(const MochiGif* g) {
   if (!g) return;
   if (!gif.open((uint8_t*)g->data, g->size, GIFDraw)) return;
@@ -281,17 +292,17 @@ void loop() {
 
   if (sPlayLove) {
     sPlayLove = false;
-    g = pickByMood(MOOD_LOVE);
+    g = nextSequential(MOOD_LOVE);
   } else if (sPlayReaction) {
     sPlayReaction = false;
-    g = pickByMood(MOOD_REACTION);
+    g = nextSequential(MOOD_REACTION);
   } else {
-    g = pickByMood(isNight() ? MOOD_SLEEPY : MOOD_DEFAULT);
+    // Full rotation through every animation, mood-shaped by context:
+    // night = only sleepy faces, day = loop through all the rest.
+    g = nextSequential(isNight() ? MOOD_SLEEPY : MOOD_DEFAULT);
   }
 
-  static const MochiGif* lastPlayed = nullptr;
-  while (g && g == lastPlayed) g = pickByMood(g->mood);
-  lastPlayed = g;
+  if (!g) g = nextSequential(MOOD_DEFAULT);
 
   playGif(g);
   delay(20);
