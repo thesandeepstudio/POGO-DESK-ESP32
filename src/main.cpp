@@ -17,6 +17,11 @@ const long gmtOffsetSec = 5 * 3600 + 45 * 60;
 const int daylightOffsetSec = 0;
 const char* ntpServer = "pool.ntp.org";
 
+// --- Identity ---
+const char* PET_NAME = "Pogo";
+const int PET_BIRTH_MONTH = 9;   // 1-12
+const int PET_BIRTH_DAY = 19;    // 1-31
+
 // --- Display ---
 TFT_eSPI tft = TFT_eSPI();
 AnimatedGIF gif;
@@ -279,6 +284,9 @@ void syncClock() {
   WiFi.mode(WIFI_OFF);
 }
 
+void syncClock();
+void showIdentityCard();
+
 void setup() {
   Serial.begin(115200);
 
@@ -292,8 +300,39 @@ void setup() {
 
   loadHappiness();
   syncClock();
+  showIdentityCard();
 
   Serial.printf("Happiness: %.1f\n", happy);
+}
+
+void showIdentityCard() {
+  struct tm timeinfo;
+  bool haveNow = getLocalTime(&timeinfo, 0);
+  bool isBirthday = haveNow &&
+                    timeinfo.tm_mon + 1 == PET_BIRTH_MONTH &&
+                    timeinfo.tm_mday == PET_BIRTH_DAY;
+
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(2);
+
+  String hi = String("Hi! I'm ") + PET_NAME;
+  tft.drawString(hi, tft.width() / 2, tft.height() / 2 - 14);
+
+  if (isBirthday) {
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.drawString("HAPPY BIRTHDAY!", tft.width() / 2, tft.height() / 2 + 12);
+    Serial.printf("It's %s's birthday today!\n", PET_NAME);
+  } else {
+    char born[40];
+    snprintf(born, sizeof(born), "Born %d/%d", PET_BIRTH_MONTH, PET_BIRTH_DAY);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(born, tft.width() / 2, tft.height() / 2 + 12);
+  }
+
+  delay(1500);
+  tft.setTextDatum(TL_DATUM);
 }
 
 void loop() {
