@@ -311,17 +311,18 @@ void loop() {
     sPlayReaction = false;
     g = nextSequential(MOOD_REACTION);
   } else {
-    // Sleep zone (22:00–7:00): yawn to fall asleep, then only sleepy faces.
+    // Sleep zone (22:00–7:00): yawn to fall asleep, then repeat sleepy only.
     // Day: yawn to wake up, then full rotation through all animations.
     bool sleepZone = isSleepZone();
     if (sleepZone && !sWasSleepZone) {
       g = findByName("yawn");
-      if (!g) g = nextSequential(MOOD_SLEEPY);
+      if (!g) g = findByName("sleepy");
     } else if (!sleepZone && sWasSleepZone) {
       g = findByName("yawn");
       if (!g) g = nextSequentialAll();
     } else if (sleepZone) {
-      g = nextSequential(MOOD_SLEEPY);
+      g = findByName("sleepy");
+      if (!g) g = nextSequential(MOOD_SLEEPY);
     } else {
       g = nextSequentialAll();
     }
