@@ -13,14 +13,11 @@ uint16_t COL_EYE = TFT_BLACK;
 uint16_t COL_FRAME = tft.color565(40, 40, 45);
 uint16_t COL_ACCENT = tft.color565(160, 160, 165);
 
-// Mochi geometry (sprite pixels, sprite = PET_W x PET_H)
+// Bug eyes (sprite pixels, sprite = PET_W x PET_H)
 const int PET_W = 200;
 const int PET_H = 190;
 
-const float BODY_CX = 100.0f, BODY_CY = 100.0f, BODY_RX = 66.0f, BODY_RY = 60.0f;
-const float EAR_L_CX = 48.0f, EAR_R_CX = 152.0f, EAR_CY = 42.0f, EAR_R = 27.0f;
-
-const float EYE_L_X = 79.0f, EYE_R_X = 121.0f, EYE_Y = 92.0f, EYE_RX = 11.0f, EYE_RY_MAX = 13.0f;
+const float EYE_L_X = 78.0f, EYE_R_X = 122.0f, EYE_Y = 95.0f, EYE_RX = 20.0f, EYE_RY_MAX = 26.0f;
 
 // Happiness — persistent stat (ESP32 NVS).
 const char* HAPPY_NS = "mochi";
@@ -122,9 +119,22 @@ void tickHappiness() {
 }
 
 void drawEye(float cx, float ry) {
-  if (ry <= 0.8f) return;  // fully closed — no pupil visible
+  if (ry <= 0.8f) return;  // fully closed — eye disappears (liquidy blink to nothing)
+
   float rx = EYE_RX * (1.0f + (1.0f - ry / EYE_RY_MAX) * 0.06f);  // slight squash-&-stretch
-  petSprite.fillEllipse(cx, EYE_Y, rx, ry, COL_EYE);
+
+  // White eyeball
+  petSprite.fillEllipse(cx, EYE_Y, rx, ry, COL_FACE);
+
+  // Black pupil, squashes with the lid
+  float pupilR = rx * 0.52f;
+  float pupilH = ry * 0.85f;
+  petSprite.fillEllipse(cx, EYE_Y + 2, pupilR, pupilH, COL_EYE);
+
+  // White highlight (shifts up as lid closes → liquidy feel)
+  float hiY = EYE_Y - ry * 0.35f;
+  petSprite.fillCircle(cx - rx * 0.28f, hiY, rx * 0.22f, COL_FACE);
+  petSprite.fillCircle(cx + rx * 0.3f, hiY + ry * 0.25f, rx * 0.10f, COL_FACE);
 }
 
 void renderPet() {
@@ -135,11 +145,6 @@ void renderPet() {
   float ry = EYE_RY_MAX * scale * (widening ? 1.15f : 1.0f);
 
   petSprite.fillSprite(COL_BG);
-
-  // Ears first, then body covers their bottoms — merged mochi silhouette with ear bumps
-  petSprite.fillCircle(EAR_L_CX, EAR_CY, EAR_R, COL_FACE);
-  petSprite.fillCircle(EAR_R_CX, EAR_CY, EAR_R, COL_FACE);
-  petSprite.fillEllipse(BODY_CX, BODY_CY, BODY_RX, BODY_RY, COL_FACE);
 
   drawEye(EYE_L_X, ry);
   drawEye(EYE_R_X, ry);
