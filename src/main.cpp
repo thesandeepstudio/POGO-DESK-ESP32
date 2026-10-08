@@ -273,6 +273,60 @@ EnvState computeEnv() {
   return ENV_OK;
 }
 
+// --- Room HUD — DHT readout, small white text in the black band under the pet ---
+
+const int HUD_TEXT_Y = 220;   // GIF canvases end at y <= 203, so this band is animation-free
+const int HUD_TEMP_X = 60;    // temperature, bottom-left
+const int HUD_HUM_X  = 220;   // humidity, bottom-right
+
+// Last-painted values: repaint only when a reading actually changes.
+float sPaintedTemp = NAN;
+float sPaintedHum = NAN;
+
+void drawRoomHud(bool force = false) {
+  float t = lastKnownTemp;
+  float h = lastKnownHum;
+  if (!force && t == sPaintedTemp && h == sPaintedHum) return;
+  sPaintedTemp = t;
+  sPaintedHum = h;
+
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  char buf[12];
+  if (!isnan(t)) snprintf(buf, sizeof(buf), "%.1fC", t);
+  else strcpy(buf, "--C");
+  tft.drawString(buf, HUD_TEMP_X, HUD_TEXT_Y);
+
+  if (!isnan(h)) snprintf(buf, sizeof(buf), "%.0f%%", h);
+  else strcpy(buf, "--%");
+  tft.drawString(buf, HUD_HUM_X, HUD_TEXT_Y);
+}
+
+// --- Top clock — time + date centered above the pet ---
+
+const char* const kMonths[12] = {"jan", "feb", "mar", "apr", "may", "jun",
+                                 "jul", "aug", "sep", "oct", "nov", "dec"};
+
+int sPaintedMinute = -1;   // repaint clock only at minute boundaries
+
+void drawClock(bool force = false) {
+  struct tm ti;
+  if (!sClockValid || !getLocalTime(&ti, 0)) return;
+  int minute = ti.tm_hour * 60 + ti.tm_min;
+  if (!force && minute == sPaintedMinute) return;
+  sPaintedMinute = minute;
+
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%02d : %02d  %d %s", ti.tm_hour, ti.tm_min, ti.tm_mday, kMonths[ti.tm_mon]);
+  tft.drawString(buf, tft.width() / 2, 18);
+}
+
 // --- Animation selection ---
 
 void handleTouch(int reading, unsigned long now);
@@ -327,10 +381,15 @@ void playGif(const MochiGif* g) {
   Serial.printf("Playing %s (%dx%d)\n", g->name, gif.getCanvasWidth(), gif.getCanvasHeight());
 
   tft.fillScreen(TFT_BLACK);
+  drawRoomHud(true);
+  drawClock(true);
   tft.startWrite();
   while (gif.playFrame(true, NULL)) {
     handleTouch(digitalRead(touchPin), millis());
     tickHappiness();
+    readSensors();
+    drawRoomHud();
+    drawClock();
     yield();
   }
   gif.close();
@@ -575,6 +634,15 @@ void setup() {
 
   pinMode(touchPin, INPUT_PULLDOWN);
   dht.begin();
+  // Prime the DHT so the first HUD paint shows numbers (first read is often NaN).
+  for (int i = 0; i < 3 && isnan(lastKnownTemp); i++) {
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+    if (!isnan(t)) lastKnownTemp = t;
+    if (!isnan(h)) lastKnownHum = h;
+    if (isnan(t) || isnan(h)) delay(300);
+  }
+  lastDhtReadAt = millis();
   analogSetPinAttenuation(ldrPin, ADC_0db);
 
   tft.init();
